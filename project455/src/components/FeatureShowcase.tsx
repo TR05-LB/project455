@@ -1,7 +1,7 @@
-import { Lock, Eye, Key, FileVideo, Shield, FileText } from "lucide-react";
+import { Lock, Eye, Key, FileVideo, Shield, FileText, MessageCircle } from "lucide-react";
 import { Card } from "@/components/ui/card";
 
-type FeatureTab = "demo" | "encode" | "decode" | "learn";
+type FeatureTab = "demo" | "encode" | "decode" | "learn" | "chat";
 
 interface FeatureShowcaseProps {
   onFeatureSelect?: (tab: FeatureTab) => void;
@@ -50,6 +50,13 @@ export const FeatureShowcase = ({ onFeatureSelect }: FeatureShowcaseProps) => {
       description: "Optional Hamming ECC keeps classic LSB audio steganography resilient to noise and transcoding.",
       color: "secondary",
       tab: "decode" as FeatureTab,
+    },
+    {
+      icon: MessageCircle,
+      title: "Secret Chat",
+      description: "Client-side encrypted WebSocket chat—open two tabs, agree on a key, and flip between cipher/plain text.",
+      color: "primary",
+      tab: "chat" as FeatureTab,
     },
   ];
 
