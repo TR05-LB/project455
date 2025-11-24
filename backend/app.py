@@ -1,8 +1,10 @@
 ﻿import base64
 import io
 import os
-from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from datetime import datetime
+from typing import Optional, Set
+from uuid import uuid4
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from dotenv import load_dotenv
@@ -27,6 +29,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+CHAT_HISTORY_LIMIT = 50
+chat_history: list[dict] = []
+chat_connections: Set[WebSocket] = set()
+
+
+async def _broadcast_chat(message: dict) -> None:
+    # Broadcast to all live connections; prune dead sockets quietly.
+    stale: list[WebSocket] = []
+    for ws in chat_connections:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            stale.append(ws)
+    for ws in stale:
+        chat_connections.discard(ws)
 
 
 async def _resolve_secret_payload(
@@ -64,6 +82,57 @@ def _file_json_response(content: bytes, filename: Optional[str]) -> JSONResponse
 
 def _bool_from_form(value: str) -> bool:
     return value.lower() not in {"false", "0", "no"}
+
+
+@app.websocket("/ws/chat")
+async def chat_ws(websocket: WebSocket):
+    await websocket.accept()
+    chat_connections.add(websocket)
+
+    # Send existing history to newly connected client.
+    for entry in chat_history:
+        try:
+            await websocket.send_json(entry)
+        except Exception:
+            pass
+
+    try:
+        while True:
+            payload = await websocket.receive_json()
+            if not isinstance(payload, dict):
+                await websocket.send_json({"type": "error", "message": "Invalid payload"})
+                continue
+
+            ciphertext = payload.get("ciphertext")
+            sender = payload.get("sender") or "anonymous"
+            cover = payload.get("cover") or ""
+
+            if not isinstance(ciphertext, str) or not ciphertext.strip():
+                await websocket.send_json({"type": "error", "message": "Missing ciphertext"})
+                continue
+            if not isinstance(cover, str) or not cover.strip():
+                await websocket.send_json({"type": "error", "message": "Missing cover message"})
+                continue
+
+            message = {
+                "type": "chat",
+                "id": str(uuid4()),
+                "ciphertext": ciphertext,
+                "sender": sender,
+                "cover": cover.strip(),
+                "sent_at": datetime.utcnow().isoformat() + "Z",
+            }
+
+            chat_history.append(message)
+            if len(chat_history) > CHAT_HISTORY_LIMIT:
+                del chat_history[:-CHAT_HISTORY_LIMIT]
+
+            await _broadcast_chat(message)
+    except WebSocketDisconnect:
+        chat_connections.discard(websocket)
+    except Exception:
+        chat_connections.discard(websocket)
+        raise
 
 
 @app.post("/api/audio/embed")
@@ -214,5 +283,5 @@ async def text_extract(
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", "3001"))
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -2,22 +2,25 @@ import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HeroSection } from "@/components/HeroSection";
 import { FeatureShowcase } from "@/components/FeatureShowcase";
+import { ChatPanel } from "@/components/ChatPanel";
 import { EncoderPanel } from "@/components/EncoderPanel";
 import { DecoderPanel } from "@/components/DecoderPanel";
 import { MethodologySection } from "@/components/MethodologySection";
 import { DemoPanel } from "@/components/DemoPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { Lock, Unlock, BookOpen, Play } from "lucide-react";
+import { Lock, Unlock, BookOpen, Play, MessageCircle } from "lucide-react";
+
+type MainTab = "demo" | "encode" | "decode" | "learn" | "chat";
 
 function IndexPage() {
-  const [activeTab, setActiveTab] = useState("demo");
+  const [activeTab, setActiveTab] = useState<MainTab>("demo");
 
   const handleGetStarted = () => {
     // Scroll to the main interface
     document.getElementById("main-interface")?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const handleFeatureSelect = (tab: "demo" | "encode" | "decode" | "learn") => {
+  const handleFeatureSelect = (tab: MainTab) => {
     setActiveTab(tab);
     document.getElementById("main-interface")?.scrollIntoView({ behavior: "smooth" });
   };
@@ -43,13 +46,21 @@ function IndexPage() {
           {/* Breadcrumb Navigation */}
           <div className="flex items-center gap-2 text-sm text-muted-foreground mb-6 animate-fade-in">
             <span>Home</span>
-            <span>→</span>
+            <span>&gt;</span>
             <span className="text-foreground font-medium">
-              {activeTab === "demo" ? "Demo" : activeTab === "encode" ? "Encode" : activeTab === "decode" ? "Decode" : "Learn"}
+              {activeTab === "demo"
+                ? "Demo"
+                : activeTab === "encode"
+                ? "Encode"
+                : activeTab === "decode"
+                ? "Decode"
+                : activeTab === "chat"
+                ? "Chat"
+                : "Learn"}
             </span>
           </div>
 
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-8">
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as MainTab)} className="space-y-8">
             <div className="flex justify-center mb-8">
               <TabsList className="glass-effect p-1.5 h-auto animate-fade-in bg-card/80 backdrop-blur-sm border border-border/50 shadow-lg">
                 <TabsTrigger 
@@ -86,6 +97,17 @@ function IndexPage() {
                   Decode
                 </TabsTrigger>
                 <TabsTrigger 
+                  value="chat" 
+                  className={`px-6 py-3 text-base gap-2 rounded-md transition-all duration-200 ${
+                    activeTab === "chat" 
+                      ? "bg-muted text-foreground shadow-md font-semibold" 
+                      : "hover:bg-muted/50 text-muted-foreground"
+                  }`}
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Chat
+                </TabsTrigger>
+                <TabsTrigger 
                   value="learn" 
                   className={`px-6 py-3 text-base gap-2 rounded-md transition-all duration-200 ${
                     activeTab === "learn" 
@@ -114,6 +136,12 @@ function IndexPage() {
             <TabsContent value="decode" className="space-y-6">
               <div className="max-w-4xl mx-auto">
                 <DecoderPanel />
+              </div>
+            </TabsContent>
+
+            <TabsContent value="chat" className="space-y-6">
+              <div className="max-w-5xl mx-auto">
+                <ChatPanel />
               </div>
             </TabsContent>
 
