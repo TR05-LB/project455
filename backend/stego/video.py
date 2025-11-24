@@ -268,23 +268,9 @@ def extract_video(
             cap.release()
             raise VideoStegoError("Invalid stego video dimensions")
 
-        # We first need 8 bytes = 64 bits of header
-        header_bytes = bytearray()
-        header_bits_collected = 0
-
-        payload_bytes = bytearray()
-        payload_bits_expected: Optional[int] = None
-        payload_bits_collected = 0
-
-        def _append_bit(buf: bytearray, bits_collected: int, bit: int) -> int:
-            idx = bits_collected // 8
-            if idx == len(buf):
-                buf.append(0)
-            buf[idx] = ((buf[idx] << 1) | (bit & 1)) & 0xFF
-            return bits_collected + 1
-
-        done = False
-
+        # Collect all bits first
+        all_bits = []
+        
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -292,53 +278,51 @@ def extract_video(
 
             flat = frame.reshape(-1)
             for val in flat:
-                bit = val & 1
-
-                if header_bits_collected < _HEADER_SIZE * 8:
-                    header_bits_collected = _append_bit(
-                        header_bytes, header_bits_collected, bit
-                    )
-
-                    if header_bits_collected == _HEADER_SIZE * 8:
-                        # Parse header
-                        if header_bytes[:4] != _MAGIC:
-                            cap.release()
-                            raise VideoStegoError(
-                                "No embedded payload found in video (magic mismatch)"
-                            )
-                        payload_len = int.from_bytes(header_bytes[4:8], "big")
-                        if payload_len <= 0:
-                            cap.release()
-                            raise VideoStegoError("Invalid embedded payload length")
-                        payload_bits_expected = payload_len * 8
-                else:
-                    if payload_bits_expected is None:
-                        cap.release()
-                        raise VideoStegoError("Internal error: header not parsed")
-
-                    if payload_bits_collected < payload_bits_expected:
-                        payload_bits_collected = _append_bit(
-                            payload_bytes, payload_bits_collected, bit
-                        )
-
-                        if payload_bits_collected == payload_bits_expected:
-                            done = True
-                            break
-
+                all_bits.append(val & 1)
+            
             del frame  # free RAM per frame
-
-            if done:
-                break
 
         cap.release()
 
-        if header_bits_collected < _HEADER_SIZE * 8:
-            raise VideoStegoError("No embedded payload found in video (incomplete header)")
+        if len(all_bits) < _HEADER_SIZE * 8:
+            raise VideoStegoError("No embedded payload found in video (insufficient bits)")
 
-        if payload_bits_expected is None or payload_bits_collected < payload_bits_expected:
+        # Reconstruct bytes using MSB-first ordering (matching embed)
+        def _bits_to_bytes(bits):
+            result = bytearray()
+            for i in range(0, len(bits), 8):
+                if i + 8 <= len(bits):
+                    byte_val = 0
+                    for j in range(8):
+                        byte_val = (byte_val << 1) | bits[i + j]
+                    result.append(byte_val)
+            return bytes(result)
+
+        # Extract header (first 8 bytes = 64 bits)
+        header_bits = all_bits[:_HEADER_SIZE * 8]
+        header_bytes = _bits_to_bytes(header_bits)
+
+        # Validate magic
+        if header_bytes[:4] != _MAGIC:
+            raise VideoStegoError(
+                "No embedded payload found in video (magic mismatch)"
+            )
+        
+        payload_len = int.from_bytes(header_bytes[4:8], "big")
+        if payload_len <= 0:
+            raise VideoStegoError("Invalid embedded payload length")
+
+        # Extract payload
+        payload_bits_needed = payload_len * 8
+        total_bits_needed = _HEADER_SIZE * 8 + payload_bits_needed
+
+        if len(all_bits) < total_bits_needed:
             raise VideoStegoError("Stego video ended before payload was fully read")
 
-        # Now decode payload identically to image.py
+        payload_bits = all_bits[_HEADER_SIZE * 8:total_bits_needed]
+        payload_bytes = _bits_to_bytes(payload_bits)
+
+        # Decode payload identically to image.py
         try:
             b64_encrypted = payload_bytes
             encrypted = base64.b64decode(b64_encrypted)
