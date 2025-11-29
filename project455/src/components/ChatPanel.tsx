@@ -16,8 +16,10 @@ type ChatMessage = {
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const SECRET_SEQUENCE = "aezakmi";
 
 function xorEncrypt(plain: string, key: string): string {
+  if (!plain || !key) return "";
   const plainBytes = textEncoder.encode(plain);
   const keyBytes = textEncoder.encode(key);
   const out = new Uint8Array(plainBytes.length);
@@ -28,6 +30,7 @@ function xorEncrypt(plain: string, key: string): string {
 }
 
 function xorDecrypt(ciphertext: string, key: string): string {
+  if (!ciphertext || !key) return "";
   const keyBytes = textEncoder.encode(key);
   const cipherBytes = Uint8Array.from(atob(ciphertext), (c) => c.charCodeAt(0));
   const out = new Uint8Array(cipherBytes.length);
@@ -35,6 +38,10 @@ function xorDecrypt(ciphertext: string, key: string): string {
     out[i] = cipherBytes[i] ^ keyBytes[i % keyBytes.length];
   }
   return textDecoder.decode(out);
+}
+
+function decodeBase64Text(data: string): string {
+  return textDecoder.decode(Uint8Array.from(atob(data), (c) => c.charCodeAt(0)));
 }
 
 function buildWsUrl() {
@@ -62,8 +69,40 @@ export const ChatPanel = () => {
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [reconnectDelay, setReconnectDelay] = useState(0);
+  const [secretUIVisible, setSecretUIVisible] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+  const sequenceRef = useRef(0);
+
+  // Toggle the hidden controls when the secret sequence is typed anywhere.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key?.toLowerCase();
+      if (!key || key.length !== 1) {
+        sequenceRef.current = 0;
+        return;
+      }
+
+      if (key === SECRET_SEQUENCE[sequenceRef.current]) {
+        sequenceRef.current += 1;
+        if (sequenceRef.current === SECRET_SEQUENCE.length) {
+          sequenceRef.current = 0;
+          setSecretUIVisible((prev) => {
+            if (prev) {
+              setSecretMessage("");
+              setSharedKey("");
+            }
+            return !prev;
+          });
+        }
+      } else {
+        sequenceRef.current = key === SECRET_SEQUENCE[0] ? 1 : 0;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const wsUrl = useMemo(buildWsUrl, []);
   useEffect(() => {
@@ -131,9 +170,9 @@ export const ChatPanel = () => {
 
   const sendMessage = () => {
     const cover = coverMessage.trim();
-    const secret = secretMessage.trim() || coverMessage.trim();
-    if (!sharedKey.trim()) {
-      toast.error("Enter the shared secret key to encrypt messages");
+    const secret = secretMessage.trim();
+    if (!cover) {
+      toast.error("Enter a cover message to send");
       return;
     }
     const ws = wsRef.current;
@@ -142,9 +181,17 @@ export const ChatPanel = () => {
       return;
     }
     try {
-      const ciphertext = xorEncrypt(secret, sharedKey);
+      let ciphertext = "";
+      if (secret && sharedKey) {
+        ciphertext = xorEncrypt(secret, sharedKey);
+      }
+      if (!ciphertext) {
+        const fallback = secret || cover || " ";
+        ciphertext = btoa(fallback);
+      }
       ws.send(JSON.stringify({ ciphertext, sender: alias, cover }));
       setSecretMessage("");
+      setCoverMessage("");
     } catch (error) {
       console.error("Encrypt/send error:", error);
       toast.error("Failed to encrypt or send message");
@@ -152,10 +199,6 @@ export const ChatPanel = () => {
   };
 
   const toggleView = () => {
-    if (!sharedKey.trim()) {
-      toast.error("Enter the shared secret key to unlock decrypt view");
-      return;
-    }
     setShowDecrypted((prev) => !prev);
   };
 
@@ -183,6 +226,11 @@ export const ChatPanel = () => {
               ? `Reconnecting in ${reconnectDelay}s`
               : "Reconnecting..."}
           </span>
+          {secretUIVisible && (
+            <span className="px-3 py-1 rounded-full bg-primary/10 text-primary border border-primary/30 text-xs">
+              Secure controls unlocked
+            </span>
+          )}
           <span className="px-3 py-1 rounded-full bg-muted text-muted-foreground">You: {alias}</span>
           <Button
             variant="outline"
@@ -210,16 +258,21 @@ export const ChatPanel = () => {
                   {messages.map((msg) => {
                     const isSelf = msg.sender === alias;
                     let decrypted: string | null = null;
-                    if (showDecrypted && sharedKey.trim() && msg.ciphertext) {
+                    if (showDecrypted && msg.ciphertext !== undefined) {
                       try {
-                        decrypted = xorDecrypt(msg.ciphertext, sharedKey);
+                        if (sharedKey) {
+                          decrypted = xorDecrypt(msg.ciphertext, sharedKey);
+                        }
+                        if (!decrypted) {
+                          decrypted = decodeBase64Text(msg.ciphertext);
+                        }
                       } catch {
                         decrypted = null;
                       }
                     }
-                  const cover = msg.cover || "[no cover message]";
+                    const cover = msg.cover || "[no cover message]";
                     const displayText = showDecrypted
-                      ? decrypted ?? "[unable to decrypt with this key]"
+                      ? decrypted ?? "[unable to decode]"
                       : cover;
                     return (
                       <div
@@ -243,7 +296,7 @@ export const ChatPanel = () => {
                           {displayText}
                         </p>
                         {showDecrypted && decrypted === null && (
-                          <p className="text-xs text-destructive mt-1">Decrypt with matching key to view</p>
+                          <p className="text-xs text-destructive mt-1">Unable to decode this message</p>
                         )}
                       </div>
                     </div>
@@ -268,53 +321,70 @@ export const ChatPanel = () => {
             </div>
           </Card>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">Secret message</label>
-            <Textarea
-              value={secretMessage}
-              onChange={(e) => setSecretMessage(e.target.value)}
-              placeholder="Hidden message (only visible after decrypting with the key)"
-              className="min-h-[120px]"
-            />
-          </div>
+          {secretUIVisible ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">Secret message</label>
+              <Textarea
+                value={secretMessage}
+                onChange={(e) => setSecretMessage(e.target.value)}
+                placeholder="Hidden message (only visible after decrypting with the key)"
+                className="min-h-[120px]"
+              />
+            </div>
+          ) : (
+            <div className="p-4 rounded-lg border border-dashed border-muted/50 text-xs text-muted-foreground" />
+          )}
         </div>
 
         <div className="space-y-4">
-          <Card className="p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Shield className="w-4 h-4 text-primary" />
-              <span className="font-semibold text-foreground text-sm">Shared Secret Key</span>
-            </div>
-            <Input
-              value={sharedKey}
-              onChange={(e) => setSharedKey(e.target.value)}
-              placeholder="Enter the agreed secret key"
-            />
-            <p className="text-xs text-muted-foreground">
-              Both tabs must use the exact same key. Cover text is visible to everyone; the secret is encrypted.
-            </p>
-          </Card>
+          {secretUIVisible ? (
+            <>
+              <Card className="p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-primary" />
+                  <span className="font-semibold text-foreground text-sm">Shared Secret Key</span>
+                </div>
+                <Input
+                  value={sharedKey}
+                  onChange={(e) => setSharedKey(e.target.value)}
+                  placeholder="Enter the agreed secret key"
+                  type="password"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Both tabs must use the exact same key. Cover text is visible to everyone; the secret is encrypted.
+                </p>
+              </Card>
 
-          <Card className="p-4 space-y-3">
-            <div className="flex items-center justify-between">
+              <Card className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <KeyRound className="w-4 h-4 text-accent" />
+                    <span className="font-semibold text-foreground text-sm">Secret View Toggle</span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={toggleView}
+                    className="gap-2"
+                  >
+                    {showDecrypted ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showDecrypted ? "Show encrypted" : "Decrypt view"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Enter the correct key first. The button switches between the raw ciphertext and the decrypted text.
+                </p>
+              </Card>
+            </>
+          ) : (
+            <Card className="p-4 space-y-2 text-xs text-muted-foreground border-dashed border-muted/50">
               <div className="flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-accent" />
-                <span className="font-semibold text-foreground text-sm">Secret View Toggle</span>
+                <Shield className="w-4 h-4 text-muted-foreground" />
+                <span className="font-semibold text-foreground text-sm">Secure controls locked</span>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={toggleView}
-                className="gap-2"
-              >
-                {showDecrypted ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                {showDecrypted ? "Show encrypted" : "Decrypt view"}
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Enter the correct key first. The button switches between the raw ciphertext and the decrypted text.
-            </p>
-          </Card>
+              <p className="invisible">Controls locked.</p>
+            </Card>
+          )}
 
           <Card className="p-4 space-y-3">
             <div className="flex items-center gap-2">
@@ -323,7 +393,6 @@ export const ChatPanel = () => {
             </div>
             <ul className="list-disc list-inside text-xs text-muted-foreground space-y-1">
               <li>Keep both tabs pointed at the same server URL.</li>
-              <li>Use the same secret key in both tabs.</li>
               <li>Hit reconnect if the WebSocket goes idle.</li>
             </ul>
           </Card>
